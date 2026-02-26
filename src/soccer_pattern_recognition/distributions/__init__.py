@@ -1,6 +1,7 @@
 """Distribution interfaces and implementations."""
 
 from .base import Distribution
+from .discrete import Categorical
 from .expfam import (
     ExponentialFamily,
     IndGaussVM,
@@ -11,6 +12,7 @@ from .expfam import (
 
 __all__ = [
     "Distribution",
+    "Categorical",
     "ExponentialFamily",
     "UnivariateGaussian",
     "MultivariateGaussian",
