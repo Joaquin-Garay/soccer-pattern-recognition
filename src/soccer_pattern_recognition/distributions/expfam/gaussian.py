@@ -1,10 +1,13 @@
-"""UnivariateGaussian and MultivariateGaussian implementation."""
+"""Univariate and multivariate Gaussian exponential-family distributions."""
 
-from ..base import Array, _EPS
-from base import ExponentialFamily
-from typing import Any, Optional, Tuple
+from __future__ import annotations
+
+from typing import Optional, Tuple
 
 import numpy as np
+
+from ..base import Array, _EPS
+from .base import ExponentialFamily
 
 
 class UnivariateGaussian(ExponentialFamily):
@@ -18,18 +21,18 @@ class UnivariateGaussian(ExponentialFamily):
     def __init__(self, mean: float = 0.0, variance: float = 1.0):
         self._mean = float(mean)
         self._variance = float(variance)
-        self._natural_param = None
-        self._dual_param = None
+        self._natural_param: Optional[Array] = None
+        self._dual_param: Optional[Array] = None
         self._validate()
         self._update_params()
 
     def _validate(self) -> None:
         if self._variance <= 0:
-            raise ValueError("variance must be > 0.")
+            raise ValueError("variance must be positive.")
         if self._natural_param is not None and self._natural_param[1] >= 0:
             raise ValueError("Second natural parameter must be negative.")
         if self._dual_param is not None and self._dual_param[1] <= self._dual_param[0] ** 2:
-            raise ValueError("eta2 - eta1^2 must be > 0.")
+            raise ValueError("eta2 - eta1^2 must be positive.")
 
     def _update_params(self) -> None:
         self._natural_param = np.array([
@@ -87,35 +90,50 @@ class UnivariateGaussian(ExponentialFamily):
         return float(eta[0]), float(eta[1] - eta[0] ** 2)
 
     # ---- densities ----
-    def log_pdf(self, X: Array) -> Array:
-        X = np.asarray(X, dtype=float)
-        return -0.5 * ((X - self._mean) ** 2) / self._variance - 0.5 * np.log(2 * np.pi * self._variance)
+    def log_pdf(self, x: Array) -> Array:
+        x = self._validate_input_samples(x)
+        if x.ndim == 2:
+            if x.shape[1] != 1:
+                raise ValueError("UnivariateGaussian expects x with shape (n,) or (n, 1).")
+            x = x[:, 0]
+        return -0.5 * ((x - self._mean) ** 2) / self._variance - 0.5 * np.log(2 * np.pi * self._variance)
+
+    def sample(self, n: int, rng: Optional[np.random.Generator] = None) -> Array:
+        self._validate_n_samples(n)
+        rng = np.random.default_rng() if rng is None else rng
+        return rng.normal(loc=self._mean, scale=np.sqrt(self._variance), size=n)
 
     # pdf inherited from base
 
     # ---- Calibration ----
     def fit(self,
-            X: Array,
+            x: Array,
             sample_weight: Optional[Array] = None,
             case: str = "classic",
-            ) -> None:
+            ) -> "UnivariateGaussian":
 
-        X, sample_weight = self._input_process(X, sample_weight)
+        self._validate_case(case)
+        x, sample_weight = self._input_process(x, sample_weight)
+        if x.ndim == 2:
+            if x.shape[1] != 1:
+                raise ValueError("UnivariateGaussian.fit expects x with shape (n,) or (n, 1).")
+            x = x[:, 0]
         match case:
             case "bregman":
                 # compute dual/expectation parameters using sufficient statistics.
-                eta = np.array([np.average(X, weights=sample_weight),
-                                np.average(X ** 2, weights=sample_weight)])
+                eta = np.array([np.average(x, weights=sample_weight),
+                                np.average(x ** 2, weights=sample_weight)])
                 self.dual_param = eta
             case _:
-                mu = np.average(X, weights=sample_weight)
-                diff = X - mu
+                mu = np.average(x, weights=sample_weight)
+                diff = x - mu
                 variance = np.inner(sample_weight * diff, diff)
 
                 self._mean = mu
                 self._variance = variance
                 self._validate()
                 self._update_params()
+        return self
 
     def __repr__(self) -> str:
         return f"UnivariateGaussian(mean={self._mean:.3f}, variance={self._variance:.3f})"
@@ -158,10 +176,10 @@ class MultivariateGaussian(ExponentialFamily):
 
     @property
     def params(self) -> Tuple[Array, Array]:
-        return self._mean, self._covariance
+        return self._mean.copy(), self._covariance.copy()
 
     @params.setter
-    def params(self, value):
+    def params(self, value: Tuple[Array, Array]):
         mean, covariance = value
         self._mean = np.asarray(mean, dtype=float)
         self._covariance = np.asarray(covariance, dtype=float)
@@ -186,24 +204,29 @@ class MultivariateGaussian(ExponentialFamily):
 
     @dual_param.setter
     def dual_param(self, eta: Array):
+        eta = np.asarray(eta, dtype=float)
         d = self.d
+        if eta.shape != (d + d * d,):
+            raise ValueError(f"dual_param must have shape ({d + d * d},).")
         mu = eta[:d]  # E[x]
         second_moments = eta[d:].reshape((d, d))  # E[x x^T]
         cov = second_moments - np.outer(mu, mu)  # covariance = E[x x^T] – mu mu^T
         cov = 0.5 * (cov + cov.swapaxes(-1, -2))  # ensure symmetric matrix
         cov += _EPS * np.eye(cov.shape[0])  # Numerical jitter if near-singular
         self._mean, self._covariance = mu, cov
+        self._validate()
+        self._cache()
 
     @staticmethod
-    def get_sufficient_stat(X: Array) -> Array:
+    def get_sufficient_stat(x: Array) -> Array:
         """
         Get the sufficient statistic vector e.g. case d=2: [x y x^2 xy yx y^2]
         :return: array of shape (N,d+d^2)
         """
-        N = X.shape[0]
-        d = X.shape[1]
-        outer = np.einsum('ij,ik->ijk', X, X)  # (N,d,d)
-        return np.concatenate([X, outer.reshape(N, d ** 2)], axis=1)
+        n = x.shape[0]
+        d = x.shape[1]
+        outer = np.einsum('ij,ik->ijk', x, x)  # (n,d,d)
+        return np.concatenate([x, outer.reshape(n, d ** 2)], axis=1)
 
     @staticmethod
     def from_dual_to_ordinary(eta: Array) -> Tuple[Array, Array]:
@@ -233,11 +256,13 @@ class MultivariateGaussian(ExponentialFamily):
         return mu, cov
 
     # ----- densities -----
-    def log_pdf(self, X: Array) -> Array:
-        X = np.asarray(X, dtype=float)
-        diff = X - self._mean  # (d,) or (N,d)
-        if diff.ndim == 1:  # single data point
-            diff = diff[np.newaxis, :]  # (1,d)
+    def log_pdf(self, x: Array) -> Array:
+        x = self._validate_input_samples(x)
+        if x.ndim != 2:
+            raise ValueError("MultivariateGaussian expects x with shape (n, d).")
+        if x.shape[1] != self.d:
+            raise ValueError(f"x has {x.shape[1]} features, expected {self.d}.")
+        diff = x - self._mean  # (d,) or (n,d)
         # Solve L y = diff^T => y = L^{-1} diff^T
         y = np.linalg.solve(self._chol, diff.T)  # (d,N)
         quad = np.sum(y * y, axis=0)  # (N,)
@@ -245,18 +270,28 @@ class MultivariateGaussian(ExponentialFamily):
 
     # pdf inherited from base
 
+    def sample(self, n: int, rng: Optional[np.random.Generator] = None) -> Array:
+        self._validate_n_samples(n)
+        rng = np.random.default_rng() if rng is None else rng
+        return rng.multivariate_normal(self._mean, self._covariance, size=n)
+
     # ----- Calibration -----
     def fit(self,
-            X: Array,
+            x: Array,
             sample_weight: Optional[Array] = None,
             case: str = "classic",
-            ) -> None:
-        X, sample_weight = self._input_process(X, sample_weight)
+            ) -> "MultivariateGaussian":
+        self._validate_case(case)
+        x, sample_weight = self._input_process(x, sample_weight)
+        if x.ndim != 2:
+            raise ValueError("MultivariateGaussian.fit expects x with shape (n, d).")
+        if x.shape[1] != self.d:
+            raise ValueError(f"x has {x.shape[1]} features, expected {self.d}.")
         match case:
             case "bregman":
                 # Compute MLE via minimization of Bregman divergence
                 # form sufficient stats and average
-                suf_stat = self.get_sufficient_stat(X)  # shape (N, d + d^2)
+                suf_stat = self.get_sufficient_stat(x)  # shape (n, d + d^2)
                 dual = np.average(suf_stat, axis=0, weights=sample_weight)  # length d + d^2
                 # update params
                 self.dual_param = dual
@@ -264,9 +299,9 @@ class MultivariateGaussian(ExponentialFamily):
                 self._cache()
             case _:
                 # Compute MLE via analytical solution of ordinary-coordinates parameters
-                mu = np.average(X, axis=0, weights=sample_weight)
-                diff = X - mu
-                # Broadcasting weights to columns; (N,1) * (N,d) -> weighted rows
+                mu = np.average(x, axis=0, weights=sample_weight)
+                diff = x - mu
+                # Broadcasting weights to columns; (n,1) * (n,d) -> weighted rows
                 weighted_diff = sample_weight[:, np.newaxis] * diff
                 cov = weighted_diff.T @ diff
                 cov += _EPS * np.eye(cov.shape[0])  # Numerical jitter if near-singular
@@ -275,6 +310,7 @@ class MultivariateGaussian(ExponentialFamily):
                 self._covariance = cov
                 self._validate()
                 self._cache()
+        return self
 
     def __repr__(self):
         mean_str = np.array2string(self._mean, precision=3, separator=' ', suppress_small=True)
