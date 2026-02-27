@@ -8,7 +8,6 @@ from typing import Optional, TypeAlias
 import numpy as np
 
 Array: TypeAlias = np.ndarray
-_EPS = 1e-9
 
 
 class Distribution(ABC):
