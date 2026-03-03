@@ -7,9 +7,9 @@ import numpy as np
 from scipy.special import logsumexp
 
 from ..core import _EPS
-from ..mixtures.initialization import initialize_model
+from .initialization import initialize_model
 if TYPE_CHECKING:
-    from ..mixtures.mixture import MixtureModel
+    from .mixture import MixtureModel
 
 Array: TypeAlias = np.ndarray
 

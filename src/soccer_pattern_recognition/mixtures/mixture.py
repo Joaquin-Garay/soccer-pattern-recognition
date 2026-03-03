@@ -9,7 +9,7 @@ import numpy as np
 from typing import Optional, Sequence, Tuple, TypeAlias
 
 from ..distributions.expfam import ExponentialFamily
-from ..inference.mixture_em import e_step, c_step, m_step, fit_em
+from .em import e_step, c_step, m_step, fit_em
 from .initialization import initialize_model
 from scipy.special import logsumexp
 
@@ -147,14 +147,14 @@ class MixtureModel:
 
     def _e_step(self, x: Array):
         """
-        See inference/mixture_em.py
+        See mixtures/em.py
         """
         return e_step(self, x)
 
     @staticmethod
     def _c_step(r: Array):
         """
-        See inference/mixture_em.py
+        See mixtures/em.py
         """
         return c_step(r)
 
@@ -165,7 +165,7 @@ class MixtureModel:
         m_step_case: str = "classic",
         verbose: bool = False):
         """
-        See inference/mixture_em.py
+        See mixtures/em.py
         """
         m_step(self, r, x, sample_weight, m_step_case, verbose)
 
