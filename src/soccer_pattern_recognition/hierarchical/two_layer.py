@@ -1,0 +1,222 @@
+"""
+Two-layer hierarchical mixture-of-mixtures model.
+"""
+
+from __future__ import annotations
+from typing import Sequence
+
+import numpy as np
+
+from scipy.special import logsumexp
+
+from ..core import _EPS
+from ..mixtures import MixtureModel
+from ..metrics.model_selection import _num_free_params_for_component
+from ..utils import (
+    add_ellips,
+    add_arrow,
+)
+
+import matplotlib.pyplot as plt
+import matplotsoccer as mps
+
+# grab the default color cycle as a list of hex‐colors
+colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+class TwoLayerScheme:
+    def __init__(self,
+                 loc_mixture: MixtureModel,
+                 dir_mixtures: Sequence[MixtureModel]):
+        self.loc_mixture = loc_mixture
+        self.loc_n_clusters = loc_mixture.n_components
+        if len(dir_mixtures) != self.loc_n_clusters:
+            raise ValueError("Components in loc mixture and number of dir mixture don't match")
+
+        self.dir_mixtures = dir_mixtures
+
+    def fit(self,
+            loc_data: np.ndarray,
+            dir_data: np.ndarray,
+            tol: float = 1e-4,
+            max_iter: int = 1000,
+            verbose: bool = False,
+            m_step_case: str = "classic",
+            c_step_bool: bool = False,
+            ) -> int:
+
+        if c_step_bool and not all(m.init == "k-means" for m in self.dir_mixtures):
+            raise ValueError(
+                "To use Classification EM, you need to specify k-means as your initialization for the direction mixtures."
+            )
+
+        loc_data = np.asarray(loc_data, dtype=float)
+        dir_data = np.asarray(dir_data, dtype=float)
+        n_obs = loc_data.shape[0]
+        if n_obs != dir_data.shape[0]:
+            raise ValueError("Location and direction number of observation don't match")
+
+        _, it_loc = self.loc_mixture.fit(loc_data,
+                                 sample_weight=None,
+                                 tol=tol,
+                                 max_iter=max_iter,
+                                 verbose=verbose,
+                                 m_step_case=m_step_case,
+                                 c_step_bool=c_step_bool)
+
+        # include a jitter in the posteriors probabilities
+        loc_posteriors = self.loc_mixture.get_posteriors(loc_data) + _EPS
+
+        # C-step: One-hot encoding of posterior matrix
+        # if c_step:
+        #     idx = np.argmax(loc_posteriors, axis=1)  # shape (N,)
+        #     one_hot = np.zeros_like(loc_posteriors, dtype=float)
+        #     one_hot[np.arange(loc_posteriors.shape[0]), idx] = 1.0
+        #     if np.any(one_hot.sum(axis=0) == 0):
+        #         # there is an empty cluster
+        #         raise ValueError("Empty cluster")
+        #     else:
+        #         loc_posteriors = one_hot
+
+        it_dir = 0
+        for j in range(self.loc_n_clusters):
+            _, it_dir_component = self.dir_mixtures[j].fit(dir_data,
+                                         sample_weight=loc_posteriors[:, j],
+                                         tol=tol,
+                                         max_iter=max_iter,
+                                         verbose=verbose,
+                                         m_step_case=m_step_case,
+                                         c_step_bool=c_step_bool,
+                                         )
+            it_dir += it_dir_component
+
+        return it_loc + it_dir
+
+    def log_pdf(self, loc_data: np.ndarray, dir_data: np.ndarray) -> np.ndarray:
+        """
+        Returns log p(x). Shape: (N,)
+        """
+        loc_pdf = self.loc_mixture.get_posteriors(loc_data) + _EPS  # (N,K)
+        loc_pdf *= self.loc_mixture.pdf(loc_data)[:, None]
+        dir_log_pdf_array = [self.dir_mixtures[k].log_pdf(dir_data)[:, None]  # (N,1)
+                             for k in range(self.loc_n_clusters)]
+        dir_log_pdf = np.concatenate(dir_log_pdf_array, axis=1)  # (N,K)
+        return logsumexp(np.log(loc_pdf) + dir_log_pdf, axis=1)  # (N,)
+
+    def pdf(self, loc_data: np.ndarray, dir_data: np.ndarray) -> np.ndarray:
+        return np.exp(self.log_pdf(loc_data, dir_data))
+
+    def bic_penalty_term(self, n_obs):
+        """ returns number of free parameters times log(n_obs) """
+        loc_n_params = self.loc_n_clusters - 1  # prior parameters
+        loc_n_params += _num_free_params_for_component(self.loc_mixture.components[0]) * self.loc_n_clusters
+
+        dir_n_params = 0
+        for k in range(self.loc_n_clusters):
+            dir_mixture = self.dir_mixtures[k]
+            dir_n_params += dir_mixture.n_components - 1  # prior parameters
+            dir_n_params += _num_free_params_for_component(dir_mixture.components[0]) * dir_mixture.n_components
+
+        p = dir_n_params + loc_n_params
+        return np.log(n_obs) * p
+
+    def bic_score(self, loc_data, dir_data) -> float:
+        """Bayesian Information Criterion (lower is better)."""
+        loc_data = np.asarray(loc_data, dtype=float)
+        dir_data = np.asarray(dir_data, dtype=float)
+
+        penalty = self.bic_penalty_term(loc_data.shape[0])
+        ll = self.log_pdf(loc_data, dir_data).sum()
+        return penalty - 2 * ll
+
+    def completed_bic_score(self, loc_data, dir_data):
+        loc_data = np.asarray(loc_data, dtype=float)
+        dir_data = np.asarray(dir_data, dtype=float)
+        N = loc_data.shape[0]
+
+        penalty = self.bic_penalty_term(N)
+
+        # Location mixture posteriors and assignments
+        loc_posteriors = self.loc_mixture.get_posteriors(loc_data) + _EPS
+        idx_loc = np.argmax(loc_posteriors, axis=1)  # (N,)
+
+        # Precompute log weights for loc mixture
+        log_weights_loc = np.log(self.loc_mixture.weights)
+        log_prior_loc = log_weights_loc[idx_loc]  # (N,)
+
+        log_expfam_loc = np.empty(N)
+        log_prior_dir = np.empty(N)
+        log_expfam_dir = np.empty(N)
+
+        for j, loc_comp in enumerate(self.loc_mixture.components):
+            mask = (idx_loc == j)
+            if not np.any(mask):
+                continue
+
+            # mask is all loc_data assigned to component j
+            loc_block = loc_data[mask]
+            log_expfam_loc[mask] = loc_comp.log_pdf(loc_block)
+
+            # directional mixtures
+            dir_mixture = self.dir_mixtures[j]
+            dir_block = dir_data[mask]
+            dir_posteriors_block = dir_mixture.get_posteriors(dir_block) + _EPS  # (n_j, K_j)
+            idx_dir_block = np.argmax(dir_posteriors_block, axis=1)  # (n_j,)
+
+            # Precompute log weights for dir_mixture
+            log_weights_dir = np.log(dir_mixture.weights)
+            log_prior_dir[mask] = log_weights_dir[idx_dir_block]
+
+            # Compute dir log_pdf
+            indices = np.where(mask)[0]
+            for local_i, global_i in enumerate(indices):
+                k = idx_dir_block[local_i]
+                log_expfam_dir[global_i] = dir_mixture.components[k].log_pdf(dir_data[global_i])
+
+        complete_data_likelihood = (log_prior_loc + log_expfam_loc
+                          + log_prior_dir + log_expfam_dir).sum()
+
+        return penalty - 2.0 * complete_data_likelihood
+
+    def plot(self,
+             figsize: float = 6,
+             arrow_scale: float = 12.0,
+             name: str = None,
+             show_title: bool = False,
+             save: bool = False,
+             show: bool = True):
+        """
+        Plot every (Gaussian + VonMises arrows) on one shared Axes,
+        using a different color per cluster, and arrow lengths proportional to mean length r.
+        """
+        ax = mps.field(show=False, figsize=figsize)
+
+        cmap = plt.cm.Blues
+
+        for i, (loc, direction) in enumerate(zip(self.loc_mixture.components,
+                                                 self.dir_mixtures)):
+            prior = self.loc_mixture.weights[i]
+            # print(f"prior {i}: {prior*100:.2f}%")
+            col = cmap(0.2 + 0.8 * prior)
+            mean, cov = loc.params
+            add_ellips(ax, mean, cov, color=col, alpha=0.5)
+            x0, y0 = mean
+
+            for vonm in direction.components:
+                loc, _ = vonm.params
+                r = vonm.mean_length  # in [0, 1]
+                length = arrow_scale * r  # scale accordingly
+                dx, dy = np.cos(loc), np.sin(loc)
+                add_arrow(ax, x0, y0,
+                          length * dx, length * dy,
+                          linewidth=0.8)
+
+        if show_title:
+            plt.title(name)
+        if save:
+            plt.savefig(f"plots/model_{name}.pdf", bbox_inches='tight')
+        if show:
+            plt.show()
+        else:
+            plt.close()
+
+
