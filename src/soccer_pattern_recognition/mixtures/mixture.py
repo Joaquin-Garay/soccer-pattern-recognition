@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional, Sequence, Tuple, TypeAlias
 
+from ..distributions import Distribution
 from ..distributions.expfam import ExponentialFamily
 from .em import e_step, c_step, m_step, fit_em
 from .initialization import initialize_model
@@ -17,7 +18,7 @@ Array: TypeAlias = np.ndarray
 
 
 # -------------------- Mixture Model --------------------
-class MixtureModel:
+class MixtureModel(Distribution):
     def __init__(self, components: list[ExponentialFamily],
                  weights: Optional[Array] = None,
                  init: Optional[str] = None,
@@ -142,6 +143,9 @@ class MixtureModel:
 
     def pdf(self, x):
         return np.exp(self.log_pdf(x))
+
+    def sample(self, n: int, rng: Optional[np.random.Generator] = None) -> Array:
+        raise NotImplementedError("MixtureModel.sample is not implemented yet.")
 
     # ---- Expectation Maximization Algorithm ----
 

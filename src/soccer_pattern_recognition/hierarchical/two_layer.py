@@ -23,7 +23,7 @@ import matplotsoccer as mps
 # grab the default color cycle as a list of hex‐colors
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
-class TwoLayerScheme:
+class TwoLayerMoM:
     def __init__(self,
                  loc_mixture: MixtureModel,
                  dir_mixtures: Sequence[MixtureModel]):

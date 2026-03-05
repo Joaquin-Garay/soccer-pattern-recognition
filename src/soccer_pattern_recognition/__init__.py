@@ -13,7 +13,7 @@ __all__ = [
     "mixtures",
     "utils",
     "MixtureModel",
-    "TwoLayerScheme",
+    "TwoLayerMoM",
     "Distribution",
     "Categorical",
     "ExponentialFamily",
@@ -45,11 +45,11 @@ def __getattr__(name: str) -> Any:
         globals()[name] = MixtureModel
         return MixtureModel
 
-    if name == "TwoLayerScheme":
-        from .hierarchical.two_layer import TwoLayerScheme
+    if name == "TwoLayerMoM":
+        from .hierarchical.two_layer import TwoLayerMoM
 
-        globals()[name] = TwoLayerScheme
-        return TwoLayerScheme
+        globals()[name] = TwoLayerMoM
+        return TwoLayerMoM
 
     if name in {
         "Distribution",
